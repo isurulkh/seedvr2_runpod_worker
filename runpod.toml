@@ -1,0 +1,85 @@
+[build]
+# Build configuration for RunPod
+dockerfile = "Dockerfile.runpod"
+context = "."
+
+[build.args]
+# Build arguments
+MODEL_SIZE = "7b"
+SP_SIZE = "1"
+
+[worker]
+# Worker configuration
+name = "seedvr-inference-worker"
+description = "SeedVR video generation inference worker"
+version = "1.0.0"
+
+# Resource requirements
+[worker.resources]
+gpu_count = 1
+gpu_memory_gb = 80
+cpu_count = 8
+memory_gb = 64
+disk_gb = 100
+
+# Environment variables
+[worker.env]
+MODEL_SIZE = "7b"
+SP_SIZE = "1"
+CUDA_VISIBLE_DEVICES = "0"
+PYTHONUNBUFFERED = "1"
+TORCH_CUDA_ARCH_LIST = "7.5;8.0;8.6"
+
+# Scaling configuration
+[worker.scaling]
+min_workers = 0
+max_workers = 10
+idle_timeout = 300  # 5 minutes
+scale_up_threshold = 0.8
+scale_down_threshold = 0.2
+
+# Health check configuration
+[worker.health]
+timeout = 30
+interval = 60
+retries = 3
+
+# Input/Output schema
+[worker.schema]
+
+[worker.schema.input]
+video_data = { type = "string", description = "Base64 encoded video data", required = false }
+video_url = { type = "string", description = "URL to video file", required = false }
+cfg_scale = { type = "number", description = "CFG scale for generation", default = 1.0, minimum = 0.1, maximum = 10.0 }
+cfg_rescale = { type = "number", description = "CFG rescale factor", default = 0.0, minimum = 0.0, maximum = 1.0 }
+sample_steps = { type = "integer", description = "Number of sampling steps", default = 1, minimum = 1, maximum = 50 }
+seed = { type = "integer", description = "Random seed for generation", default = 666 }
+res_h = { type = "integer", description = "Output height", default = 720, minimum = 256, maximum = 1024 }
+res_w = { type = "integer", description = "Output width", default = 1280, minimum = 256, maximum = 1920 }
+
+[worker.schema.output]
+status = { type = "string", description = "Processing status" }
+result_video = { type = "string", description = "Base64 encoded result video" }
+result_path = { type = "string", description = "Path to result file" }
+parameters = { type = "object", description = "Processing parameters used" }
+error = { type = "string", description = "Error message if failed" }
+error_type = { type = "string", description = "Error type if failed" }
+
+# Deployment configuration
+[deployment]
+region = "US-WEST"
+gpu_type = "H100 PCIe"
+max_concurrent_requests = 2
+request_timeout = 600  # 10 minutes
+
+# Monitoring and logging
+[monitoring]
+enable_metrics = true
+enable_logging = true
+log_level = "INFO"
+
+# Cost optimization
+[optimization]
+enable_auto_scaling = true
+enable_spot_instances = false
+preferred_regions = ["US-WEST", "US-EAST"]

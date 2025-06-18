@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  seedvr-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: seedvr-inference-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_SIZE=7b  # Change to 3b for smaller model
+      - SP_SIZE=1      # Sequence parallel size
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=1
+      - CUDA_VISIBLE_DEVICES=0
+    volumes:
+      - ./ckpts:/app/ckpts
+      - ./results:/app/results
+      - ./test_videos:/app/test_videos
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  # Optional: Add a simple web interface
+  seedvr-web:
+    image: nginx:alpine
+    container_name: seedvr-web-interface
+    ports:
+      - "80:80"
+    volumes:
+      - ./web:/usr/share/nginx/html
+    depends_on:
+      - seedvr-api
+    restart: unless-stopped
+
+volumes:
+  model_cache:
+    driver: local
+  results_data:
+    driver: local
+
+networks:
+  default:
+    name: seedvr-network

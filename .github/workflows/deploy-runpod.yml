@@ -1,0 +1,251 @@
+name: Deploy SeedVR to RunPod
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'runpod_handler.py'
+      - 'Dockerfile.runpod'
+      - 'requirements_runpod.txt'
+      - '.github/workflows/deploy-runpod.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      model_size:
+        description: 'Model size to deploy'
+        required: true
+        default: '7b'
+        type: choice
+        options:
+          - '3b'
+          - '7b'
+      force_deploy:
+        description: 'Force deployment even if tests fail'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/seedvr-runpod
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.9]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements_runpod.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install runpod pytest
+        # Install minimal dependencies for testing
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+        pip install transformers accelerate
+    
+    - name: Lint code
+      run: |
+        pip install flake8 black
+        flake8 runpod_handler.py --max-line-length=120
+        black --check runpod_handler.py
+    
+    - name: Test handler import
+      run: |
+        python -c "from runpod_handler import handler; print('Handler import successful')"
+    
+    - name: Run unit tests
+      run: |
+        # Create a simple test
+        cat > test_handler.py << 'EOF'
+        import sys
+        import os
+        sys.path.append('.')
+        
+        def test_handler_structure():
+            from runpod_handler import handler
+            assert callable(handler), "Handler should be callable"
+            
+        def test_worker_class():
+            from runpod_handler import SeedVRWorker
+            # Test class structure without GPU
+            assert hasattr(SeedVRWorker, 'process_video'), "Worker should have process_video method"
+            
+        if __name__ == "__main__":
+            test_handler_structure()
+            test_worker_class()
+            print("All tests passed!")
+        EOF
+        python test_handler.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=${{ github.event.inputs.model_size || '7b' }}-latest
+    
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.runpod
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          MODEL_SIZE=${{ github.event.inputs.model_size || '7b' }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+
+  deploy:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install RunPod SDK
+      run: |
+        pip install runpod
+    
+    - name: Deploy to RunPod
+      env:
+        RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        MODEL_SIZE: ${{ github.event.inputs.model_size || '7b' }}
+        IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+      run: |
+        python deploy_runpod.py \
+          --api-key "$RUNPOD_API_KEY" \
+          --worker-name "seedvr-$MODEL_SIZE-$(echo $GITHUB_SHA | cut -c1-7)" \
+          --model-size "$MODEL_SIZE" \
+          --image-name "$(echo '$IMAGE_TAG' | head -n1)"
+    
+    - name: Test deployed endpoint
+      env:
+        RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      run: |
+        # Wait for deployment to be ready
+        sleep 60
+        
+        # Create a simple test video
+        sudo apt-get update && sudo apt-get install -y ffmpeg
+        ffmpeg -f lavfi -i testsrc=duration=2:size=320x240:rate=30 -c:v libx264 -pix_fmt yuv420p test_video.mp4
+        
+        # Test the endpoint (if endpoint ID is available)
+        # python test_runpod_worker.py --video-path test_video.mp4 --endpoint-id $ENDPOINT_ID --api-key $RUNPOD_API_KEY --test-remote
+    
+    - name: Create deployment summary
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+        ## 🚀 RunPod Deployment Summary
+        
+        - **Model Size**: ${{ github.event.inputs.model_size || '7b' }}
+        - **Image**: `${{ needs.build.outputs.image-tag }}`
+        - **Commit**: `${{ github.sha }}`
+        - **Branch**: `${{ github.ref_name }}`
+        
+        ### Next Steps
+        1. Check RunPod dashboard for endpoint status
+        2. Test the endpoint using the provided scripts
+        3. Monitor logs and performance metrics
+        
+        ### Testing
+        ```bash
+        python test_runpod_worker.py \
+          --endpoint-id YOUR_ENDPOINT_ID \
+          --api-key YOUR_API_KEY \
+          --video-path test_video.mp4 \
+          --test-remote
+        ```
+        EOF
+
+  notify:
+    needs: [test, build, deploy]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Notify deployment status
+      uses: 8398a7/action-slack@v3
+      if: env.SLACK_WEBHOOK_URL != ''
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        text: |
+          SeedVR RunPod Deployment ${{ job.status }}
+          Model: ${{ github.event.inputs.model_size || '7b' }}
+          Commit: ${{ github.sha }}
+          Branch: ${{ github.ref_name }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  cleanup:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Clean up old images
+      uses: actions/delete-package-versions@v4
+      with:
+        package-name: 'seedvr-runpod'
+        package-type: 'container'
+        min-versions-to-keep: 5
+        delete-only-untagged-versions: true
+      continue-on-error: true
