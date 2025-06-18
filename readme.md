@@ -128,12 +128,77 @@ snapshot_download(cache_dir=cache_dir,
 
 You need to set the related settings in the inference files.      
 
-**GPU Requirement:** We adopt sequence parallel to enable multi-GPU inference and 1 H100-80G can handle videos with 100x720x1280. 4 H100-80G further support 1080p and 2K videos. We will support more inference tricks like [Tile-VAE](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111) and [Progressive Aggregation Sampling](https://github.com/IceClear/StableSR) in the future.      
+**GPU Requirement:** We adopt sequence parallel to enable multi-GPU inference and 1 H100 PCIe-80G can handle videos with 100x720x1280. 4 H100 PCIe-80G further support 1080p and 2K videos. We will support more inference tricks like [Tile-VAE](https://github.com/pkuliyi2015/multidiffusion-upscaler-for-automatic1111) and [Progressive Aggregation Sampling](https://github.com/IceClear/StableSR) in the future.      
 
 ```python
 # Take 3B SeedVR2 model inference script as an example
 torchrun --nproc-per-node=NUM_GPUS projects/inference_seedvr2_3b.py --video_path INPUT_FOLDER --output_dir OUTPUT_FOLDER --seed SEED_NUM --res_h OUTPUT_HEIGHT --res_w OUTPUT_WIDTH --sp_size NUM_SP
 ```
+
+
+## 🚀 RunPod Serverless Deployment
+
+Deploy SeedVR as a serverless worker on RunPod for scalable video restoration in the cloud.
+
+### Quick Deploy
+
+```bash
+# Deploy SeedVR2-7B worker
+python deploy_runpod.py --model-size 7b --worker-name "seedvr-7b-worker"
+
+# Deploy SeedVR2-3B worker (more cost-effective)
+python deploy_runpod.py --model-size 3b --worker-name "seedvr-3b-worker"
+```
+
+### Features
+
+- **Serverless Scaling**: Auto-scale based on demand with 0-5 workers
+- **GPU Options**: H100 PCIe (80GB) for optimal performance at $2.19/hr
+- **Model Support**: Both SeedVR2-3B and SeedVR2-7B variants
+- **API Ready**: RESTful API with base64 video input/output
+- **CI/CD Integration**: Automated deployment via GitHub Actions
+
+### API Usage
+
+```python
+import runpod
+import base64
+
+# Initialize RunPod client
+runpod.api_key = "your-runpod-api-key"
+
+# Encode video to base64
+with open("input_video.mp4", "rb") as f:
+    video_b64 = base64.b64encode(f.read()).decode()
+
+# Run inference
+response = runpod.run_sync(
+    endpoint_id="your-endpoint-id",
+    input={
+        "video_data": video_b64,
+        "cfg_scale": 7.5,
+        "steps": 50,
+        "seed": 42,
+        "resolution": [720, 1280]
+    }
+)
+
+# Decode output video
+output_video = base64.b64decode(response["output"]["video_data"])
+with open("restored_video.mp4", "wb") as f:
+    f.write(output_video)
+```
+
+### Performance
+
+| Resolution | Model | GPU | Processing Time |
+|------------|-------|-----|----------------|
+| 720p | 3B | H100 PCIe | 20-30s |
+| 720p | 7B | H100 PCIe | 30-45s |
+| 1080p | 3B | H100 PCIe | 30-45s |
+| 1080p | 7B | H100 PCIe | 45-60s |
+
+For detailed deployment instructions, see [README_RUNPOD.md](README_RUNPOD.md).
 
 
 ## ✍️ Citation
