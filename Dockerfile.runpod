@@ -60,11 +60,23 @@ RUN pip install \
     decord \
     av
 
+# Install Ninja for faster compilation
+RUN pip install ninja
+
 # Install NVIDIA Apex for mixed precision training (CUDA 12.1 compatible)
+# Using optimized installation with parallel building for faster compilation
 RUN git clone https://github.com/NVIDIA/apex.git && \
     cd apex && \
-    pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./ && \
+    NVCC_APPEND_FLAGS="--threads 4" pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext --cuda_ext --parallel 8" ./ && \
     cd .. && rm -rf apex
+
+# Install additional optimization libraries for better performance
+RUN pip install \
+    ninja \
+    einops \
+    timm \
+    ftfy \
+    regex
 
 # Copy project files
 COPY . .
